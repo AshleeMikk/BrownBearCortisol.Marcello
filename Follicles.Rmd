@@ -1,0 +1,120 @@
+---
+title: "CortisolFollicles"
+author: "Ashlee Mikkelsen"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This file joins the cortisol data records to records from lab work that has the follicle category to determine if follicle presence affects cortisol concentrations in our data and to what extent it needs to be accounted for. 
+
+So I will first bring in the data from the different sources, join the full cortisol data to the follicle data and determine if there is a difference and then re-run the models with follicle categories as a random effect and determine if this changes our results. 
+
+
+# Environment
+
+
+## Load packages
+```{r}
+library(ggplot2)
+library(lme4)
+library(MuMIn)
+
+```
+
+
+## Set graphing theme
+```{r}
+
+
+mytheme <- theme(
+    axis.text = element_text(size = 10,face = "bold"),
+    axis.title = element_text(size = 12, face = "bold"),
+    panel.grid.major = element_line(color = "white"),
+    panel.grid.minor = element_line(color = "white"),
+    panel.background = element_rect(fill = "white"),
+    axis.line = element_line(colour = "black",size = 1),
+    axis.ticks = element_line(size = 1)
+    )
+
+theme_set(mytheme)
+
+```
+
+
+
+## Load data
+```{r}
+
+Folli.df <- read.csv("SamplID_BearYearJoin.csv")
+Folli.df <- na.omit(Folli.df)
+
+Cort.df <- read.csv("CORT_SBBRP.csv")
+Cort.df <- na.omit(Cort.df)
+
+
+
+```
+
+
+OK. So I need to join the records through the bear year columns and then pull the bear ID, follicle category, age, repro category, and cortisol data to re-run the analysis.
+
+
+### Build data table
+
+```{r}
+
+Bear.Cort <- merge(x=Folli.df,
+                   y=Cort.df,
+                   by="bearyear.sampled",
+                   all= TRUE)
+
+Bear.Cort <- na.omit(Bear.Cort)
+
+Bear.Cort <- Bear.Cort[,c(1:4,6,8:13,16)]
+Bear.Cort$fFOL <- as.factor(Bear.Cort$Follicles)
+
+```
+
+Now I have my data all in a single table and I need to look at the differences among follicle categories.
+
+# Data distribution
+
+```{r}
+
+ggplot(data = Bear.Cort, aes(fFOL, CORT_corrected))+
+  geom_boxplot(aes(group = fFOL))+
+  xlab("Follicle Category")
+
+Cort.Int.lm <- glmer(CORT_corrected~1+
+                      (1|Bear.Id),
+                    data = Bear.Cort,
+                   family = Gamma(link="log"))
+AICc(Cort.Int.lm)
+
+Cort.Fol.lm <- glmer(CORT_corrected~fFOL+
+                      (1|Bear.Id),
+                    data = Bear.Cort,
+                   family = Gamma(link="log"))
+AICc(Cort.Fol.lm)
+
+summary(Cort.Fol.lm)
+
+
+```
+
+
+# Save data table to use in analysis with follicle random effects
+
+```{r}
+
+
+write.csv(Bear.Cort,
+          "BearCort_Follicles.csv")
+```
+
+
+

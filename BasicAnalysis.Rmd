@@ -1,0 +1,1191 @@
+---
+title: "MarcelloCortAnalysis"
+author: "Ashlee Mikkelsen"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+```
+
+
+# Intro
+
+So the bear cortisol data is, in a word, PROBLEMATIC. All caps. And we have been trying to come up with a modelinbg solution with Marcello, but the time between conversations is too long, and we are all sort of lost about what we have done, why various methods haven't worked, and what is the simplest modeling solution we can apply to wrap up this manuscript. 
+
+So, below, I am going to go back to the basics and do some basic modeling and exploration of our data. I will read in the data file, look at the cort distribution of raw values, z-transformed values, and z-transformed ln(cort) values. I will also run our basic mixed models and look at the residuals for issues.
+
+Then I will summarize my findings and send them over to Andreas. Let's do this!
+
+
+## Envinonment setup
+
+```{r}
+
+rm(list = ls())
+
+#setwd("~Rprojects\\BrownBearCortisol.Marcello")
+
+
+```
+
+
+### Load packages
+
+```{r, include=FALSE}
+library(ggplot2)
+library(viridis)
+library(lme4)
+library(wiqid)
+#library(MuMIn)
+library(ggExtra)
+library(ggiraphExtra)
+library(ggeffects)
+library(gridExtra)
+
+```
+
+
+
+### set graphing theme
+
+```{r, include=FALSE}
+
+mytheme <- theme(
+    axis.text = element_text(size = 10,face = "bold"),
+    axis.title = element_text(size = 12, face = "bold"),
+    panel.grid.major = element_line(color = "white"),
+    panel.grid.minor = element_line(color = "white"),
+    panel.background = element_rect(fill = "white"),
+    axis.line = element_line(colour = "black",size = 1),
+    axis.ticks = element_line(size = 1)
+    )
+theme_set(mytheme)
+
+P <- palette(mako(40))
+P <- palette(mako(40))
+
+
+
+```
+
+
+
+
+###Load data
+
+```{r, include=FALSE}
+
+
+AllData <- read.csv("BearCort_Follicles.csv")
+
+Bears <- as.factor(AllData$Bear.ID)
+Nbear<- nlevels(Bears)
+Repro <- as.factor(AllData$Reproductive)
+Ncubs<- nlevels(Repro=="3")
+
+```
+
+
+
+# Compliling Data
+
+One issue we have with the cortisol data is the difference specificity between te two kits. Eventhough The project has largely accounded for this difference following Wilson et al. (2021), there is still some issues. So Andreas proposed that we standardize the cortisol from each kit seperately, then combine them into a unified dataset for analysis. 
+
+We also need to log-transform the cortisol data, then standardize it because the z-transformation creates values equal to and less than zero, which the log scale cannot handle. 
+
+
+Below I build our data table for analysis.
+
+```{r, include=FALSE}
+
+AllData$Zcort <- standardize(AllData$CORT_corrected)
+
+cort.df <- AllData
+cort.df$Zage <- standardize(cort.df$age)
+names(cort.df)[12] <- "Reproductive"
+cort.df$Reproductive <- as.factor(cort.df$Reproductive)
+
+
+```
+
+Great. Now we have a single table with our original cortisol values (HCC), cortisol values standardized by each kit (Zcort) log-transformed cort values (LNcort) and log-transformed cortisol values standardized by kit (ZLNcort).
+
+
+# Data exploration
+
+
+## Distrtibutions
+
+```{r, fig.height=6, fig.width=6}
+
+ggplot(data = cort.df, aes(HCC))+
+  geom_histogram(binwidth = sd(cort.df$HCC))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))+
+  xlab("Brown bear cortisol values\n corrected for kit (pg/mg)")
+
+ggplot(data = cort.df, aes(LNcort))+
+  geom_histogram(binwidth = sd(cort.df$LNcort))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))+
+  xlab("Log-transformed brown bear cortisol values\n corrected for kit (pg/mg)")+
+  geom_vline(xintercept = mean(cort.df$LNcort))
+
+
+ggplot(data = cort.df, aes(Zcort))+
+  geom_histogram(binwidth = sd(cort.df$Zcort))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))+
+  xlab("Standardized brown bear cortisol values\n corrected for kit (pg/mg)")+
+  geom_vline(xintercept = mean(cort.df$Zcort))
+
+ggplot(data = cort.df, aes(ZLNcort))+
+  geom_histogram(binwidth = sd(cort.df$ZLNcort))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))+
+  xlab("Standardized log-transformed brown bear cortisol values\n corrected for kit (pg/mg)")+
+  geom_vline(xintercept = mean(cort.df$ZLNcort))
+
+
+```
+
+OK. We have seen this before. The kit-corrected cortsiol data is highly left-skewed with a few outliers above 20pg/mg. With this data, a normal model isn't going to work, and the next step would be to do a log-normal model.
+
+The log-transformed distribution isn't AMAZING, but it isn't horrible either.
+
+The standardized kit-corrected data doesn't look too bad, really. It's still a bit skewed on the right, hand side, but most of the data is confined within 2 SD of the mean
+
+The cortisol values that have been log-transformed and standerdized have a great distribution
+
+```{r, fig.height=6, fig.widtht=7}
+
+ggplot(data = cort.df,aes(Age,HCC))+
+  geom_jitter(width = 0.2,
+              size=3.5,
+              alpha=0.6,
+              aes(color=Reproductive))+
+  ylab("Brown bear hair cortisol concentration\n (pg/mg)")+
+  scale_color_viridis(discrete = TRUE)+
+  theme(legend.position = "top")
+
+
+```
+
+
+## Log-normal model
+
+```{r, include=FALSE}
+
+LogNorm.INT <- glmer(HCC~1+(1|Bear.ID),
+                    data = cort.df,
+                    family = gaussian(link = "log"),
+                     control = glmerControl(optimizer = "nloptwrap",
+                                optCtrl = list(xtol_abs=1e-8,
+                                               ftol_abs=1e-8)))
+
+
+LogNorm.ADDlm <- glmer(HCC~Zage+Reproductive+(1|Bear.ID),
+                    data = cort.df,
+                    family = gaussian(link = "log"),
+                     control = glmerControl(optimizer = "nloptwrap",
+                                optCtrl = list(xtol_abs=1e-8,
+                                               ftol_abs=1e-8)))
+
+
+LogNorm.INXlm <- glmer(HCC~Zage+Reproductive+Zage:Reproductive+(1|Bear.ID),
+                    data = cort.df,
+                    family = gaussian(link = "log"),
+                     control = glmerControl(optimizer = "nloptwrap",
+                                optCtrl = list(xtol_abs=1e-8,
+                                               ftol_abs=1e-8)))
+```
+
+### Intercept only
+```{r}
+
+summary(LogNorm.INT)
+```
+
+### Addative model
+```{r}
+summary(LogNorm.ADDlm)
+```
+
+### Interaction model
+```{r}
+
+summary(LogNorm.INXlm)
+```
+
+
+### Plot residuals
+
+The additive model had the most support, so we need to look at the model output
+
+```{r}
+Model.Resids <- resid(LogNorm.ADDlm)
+Model.Fitted <- fitted(LogNorm.ADDlm)
+Age <- cort.df$Zage
+Repro.Status <- cort.df$Reproductive
+
+plot(Model.Fitted,Model.Resids)
+plot(Age,Model.Resids)
+plot(Repro.Status,Model.Resids)
+```
+
+
+
+```{r, include=FALSE}
+
+library(ggeffects)
+
+df<-ggpredict(LogNorm.ADDlm, terms=c("Zage","Reproductive"))
+df$Age <- (df$x*sd(cort.df$Age))+mean(cort.df$Age)
+
+```
+
+
+### Predicted cortisol
+
+Below is a figure from the best model (additive)
+
+```{r, fig.height=6, fig.width=6.5}
+
+ggplot(data = df, aes(Age, predicted))+
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high, fill=group), alpha=0.15)+
+  geom_line(aes(color=group, lty=group), linewidth=1.6)+
+  ylab("Brown bear hair cortisol\n(pg/mg)")+
+  xlab("Bear age")+
+  scale_color_viridis(discrete = TRUE, begin=0.1)+
+  scale_fill_viridis(discrete = TRUE, begin = 0.1)+
+  scale_linetype_manual(values = c("dotdash",
+                                   "dotted",
+                                   "longdash",
+                                   "solid"))+
+  labs(fill="Reproductive Status",
+       color="Reproductive Status",
+       lty="Reproductive Status")+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0),
+                     breaks = seq(1,10,2))
+
+
+```
+
+In this analysis, we get a is.singular warning, but only because the bear.ID isn't accounting for any variance. Other than that, I think the model output looks fine and I think we could use this model. TECHNICALLY, we have some issues with age and repro being confounded because each repro category is not represented at each age, but that is driven by offspring in ages 1&2, so I think it would be easy to account for that in the discussion.
+
+## Standardized cortisol
+
+
+```{r,include=FALSE}
+Stand.INT <- lmer(Zcort~1+(1|Bear.ID),
+                    data = cort.df,
+                  REML = FALSE)
+
+Stand.ADDlm <- lmer(Zcort~Zage+Reproductive+(1|Bear.ID),
+                    data = cort.df,
+                    REML = FALSE)
+
+Stand.INXlm <- lmer(Zcort~Zage+Reproductive+Zage:Reproductive+(1|Bear.ID),
+                    data = cort.df,
+                    REML=FALSE)
+```
+
+
+This time, the interaction model had the most support, but judging by the beta estimates and residuals, there is something going here. Likely, It has to do the fact that the cortisol is standardized separately...???
+
+
+### Intercept only
+```{r}
+summary(Stand.INT)
+```
+
+### Additive model
+```{r}
+summary(Stand.ADDlm)
+```
+
+### Interaction model
+```{r}
+summary(Stand.INXlm)
+```
+
+
+```{r, fig.height=6, fig.width=6}
+
+Model.Resids <- resid(Stand.INXlm)
+Model.Fitted <- fitted(Stand.INXlm)
+Age <- cort.df$Zage
+Repro.Status <- cort.df$Reproductive
+
+plot(Model.Fitted,Model.Resids)
+plot(Age,Model.Resids)
+plot(Repro.Status,Model.Resids)
+
+
+```
+
+So with the standardized values in a normal model, we have something wonky going on in the residuals.
+
+
+## Standardized log-transformed cortisol
+
+
+```{r}
+StandLog.INT <- lmer(ZLNcort~1+(1|Bear.ID),
+                    data = cort.df,
+                  REML = FALSE)
+
+StandLog.ADDlm <- lmer(ZLNcort~Zage+Reproductive+(1|Bear.ID),
+                    data = cort.df,
+                    REML = FALSE)
+
+StandLog.INXlm <- lmer(ZLNcort~Zage+
+                         Reproductive+
+                         Zage:Reproductive+
+                         (1|Bear.ID),
+                    data = cort.df,
+                    REML=FALSE)
+
+```
+Again, the interaction model has the most support, but looking at the beta estimates and residuals, something isn't good here.
+
+
+### Intercept only
+```{r}
+summary(StandLog.INT)
+```
+
+### Additive model
+```{r}
+summary(StandLog.ADDlm)
+```
+
+### Interaction model
+```{r}
+summary(StandLog.INXlm)
+```
+
+#### Plot residuals
+
+```{r}
+Model.Resids <- resid(StandLog.INXlm)
+Model.Fitted <- fitted(StandLog.INXlm)
+Age <- cort.df$Zage
+Repro.Status <- cort.df$Reproductive
+
+plot(Model.Fitted,Model.Resids)
+plot(Age,Model.Resids)
+plot(Repro.Status,Model.Resids)
+
+
+
+```
+
+
+Again, we have suspicious patterns in our residuals vs fitted plot. 
+
+# Conclusions
+
+I am not sure why Marcello had issues with a log-normal GLMM. I assume it is related to the package he uses to check model assumptions. Anyway, I think this is our best option. It also doesn't support the interaction, which simplifies life by quite a bit. The only issue I got (as mentioned above) is the is.singular warning, which can be ignored. He can use AICc values to compare models and we have really good beta estimates. As mentioned above, we also have the issue of reproductive category and age being confounded without the interaction. As you can see the figure, we have predicted cortisol values for "offspring with mother" across all ages, and obviously we don't have 5 year olds still hanging around their mothers.
+
+
+
+
+
+
+
+
+
+# restart 24.04.2024
+Marcello is in Mongolia and there is a problem with the analysis/figure, so I am going to re-do the analysis. Note of caution, It looks like I am using a different dataset than Marcello. I am using the last dataset I have from him.
+
+
+# Transform data
+```{r}
+
+AllData <- read.csv("Marcello_DataForAnalysis.csv")
+AllData$fFOL <- as.factor(AllData$fFOL)
+Zage <- standardize(AllData$age)
+
+AllData <- subset(AllData, age<10)
+
+table(AllData$Repro)
+
+```
+
+
+## Models
+
+Marcello reports using a GLMM with a gamma distribution, a log-link, and bear ID as a random effect. Fixed effects include age and reproductive status.
+
+I am going to inlcude the intercept only model,
+the affect of repro status,
+the affect of age,
+the additive affect of age,
+and an interaction between age and reproductive status
+
+```{r}
+
+ggplot(data = AllData, aes(HCC))+
+  geom_histogram(binwidth = sd(AllData$HCC))
+
+ggplot(data = AllData, aes(Zcort))+
+  geom_histogram(binwidth = sd(AllData$Zcort))
+
+```
+
+
+
+## Intercept
+
+
+```{r}
+
+
+Int.mod <- glmer(HCC~1+(1|Bear.ID)+
+                   (1|fFOL),
+                 data = AllData,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10))
+summary(Int.mod)
+AIC.Int <- AICc(Int.mod)
+
+
+```
+
+
+## Repro status
+
+```{r}
+
+Repro.mod <- glmer(HCC~-1+Repro+
+                     (1|Bear.ID)+(1|fFOL),
+                 data = AllData,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10))
+summary(Repro.mod)
+AIC.Repro <- AICc(Repro.mod)
+
+```
+
+
+
+## Age
+
+```{r}
+
+Age.mod <- glmer(HCC~-1+age+
+                   (1|Bear.ID)+(1|fFOL),
+                 data = AllData,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10))
+summary(Age.mod)
+AIC.Age <- AICc(Age.mod)
+
+```
+
+
+## Age + Repro status
+
+```{r}
+
+AgeRepro.mod <- glmer(HCC~-1+age+
+                        Repro+
+                        (1|Bear.ID)+
+                        (1|fFOL),
+                 data = AllData,
+                 family = Gamma(link = "log"),
+                 nAGQ = 0)
+
+summary(AgeRepro.mod)
+AIC.AgeRepro <- AICc(AgeRepro.mod)
+
+```
+
+
+## Age * Repro status
+
+```{r}
+
+AgexRepro.mod <- glmer(HCC~-1+age+
+                         Repro+
+                         age*Repro+
+                         (1|Bear.ID)+
+                         (1|fFOL),
+                 data = AllData,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10),
+                             nAGQ = 0)
+summary(AgexRepro.mod)
+AIC.AgexRepro <- AICc(AgexRepro.mod)
+
+```
+
+
+
+## Visualization for age and sex
+
+```{r}
+
+
+summary(AgexRepro.mod)
+AgexRepro.df <- ggpredict(AgexRepro.mod,
+                        terms = c("age [sample=9]","Repro"))
+
+write.csv(AgexRepro.df,
+          "AgexReproDataFrame.csv")
+AllData <- read.csv("Marcello_DataForAnalysis.csv")
+
+AgexRepro.df2 <- read.csv("AgexReproDataFrame_CubsRestricted.csv")
+
+
+Marcello.Fig <- ggplot(data = AgexRepro.df2, aes(Age,Pred.Cort))+
+  geom_jitter(data = AllData, aes(age, HCC, 
+                                  color=Repro,
+                                  pch=Repro),
+              width=0.15,
+              alpha=0.5,
+              size=2)+
+  geom_ribbon(aes(ymin=conf.low,
+                  ymax=conf.high,
+                  fill=group),
+              alpha=0.15)+
+  geom_line(aes(color=group,
+                lty=group),
+            linewidth=1.2)+
+    scale_color_manual(values = c("#999999",
+                                  "#E69F00",
+                                  "#56B4E9",
+                                  "#339900"))+
+    scale_fill_manual(values = c("#999999",
+                                  "#E69F00",
+                                  "#56B4E9",
+                                  "#339900"))+
+  scale_y_continuous(expand=c(0.01,0.01),
+                     breaks = seq(0,20,5),
+                     limits = c(0,20))+
+  scale_x_continuous(expand = c(0.01,0.01),
+                     breaks = seq(1,9,1),
+                     labels = c("1","","3","","5","","7","","9"))+
+  ylab("Cortisol (pg/mg)")+
+  xlab("Bear age")+
+  labs(color="Reproductive status",
+       pch="Reproductive status",
+       fill="Reproductive status",
+       lty="Reproductive status")+
+  theme(legend.position = "none",
+        axis.title = element_text(size=18),
+        axis.text = element_text(size=16))
+
+Marcello.Fig
+
+ggsave(plot = Marcello.Fig,
+       "MarcelloLineFig.png",
+       width = 8.5, height = 5.5,
+       units = "in",
+       dpi=800)
+
+
+```
+
+## Box plot
+
+```{r}
+
+Marcello.Box <- ggplot(data = AllData)+
+  geom_jitter(aes(Repro,HCC),
+              width=0.02,
+              alpha=0.2)+
+  geom_boxplot(aes(Repro,HCC, 
+                   group=Repro,
+                   fill=Repro),
+               alpha=0.4)+
+  scale_fill_manual(values = c("#999999",
+                                  "#E69F00",
+                                  "#56B4E9",
+                                  "#339900"))+
+  scale_y_continuous(expand=c(0.01,0.01),
+                     breaks = seq(0,20,5),
+                     limits = c(0,20))+
+  scale_x_discrete(expand=c(0.1,0.1),
+                   labels = c("Female with\ndependent offspring",
+                                "Dependent\noffspring",
+                                "Solitary\nfemale",
+                                "Solitary\nmale"))+
+  ylab("Cortisol (pg/mg)")+
+  xlab("Demographic class")+
+  labs(fill="Reproductive status")+
+  theme(legend.position = "none",
+        axis.title = element_text(size=18),
+        axis.text = element_text(size=16))
+
+Marcello.Box
+
+ggsave(plot=Marcello.Box,
+       "Marcello_Box.png",
+       width = 9, height = 6,
+       units="in",
+       dpi=800)
+  
+
+
+```
+
+
+## Sample summary
+
+```{r}
+
+min(AllData$age)
+max(AllData$age)
+BearNums <- as.factor(AllData$Bear.ID)
+fems <- subset(AllData, sex=="F")
+Fem.id <- as.factor(fems$Bear.ID)
+Males <- subset(AllData, sex=="M")
+Male.id <- as.factor(Males$Bear.ID)
+
+Off <- subset(AllData, Repro=="Offspring accompanying mother")
+mean(Off$HCC)
+sd(Off$HCC)
+median(Off$HCC)
+min(Off$HCC)
+max(Off$HCC)
+
+dams <- subset(AllData, Repro=="Female with dependent offspring")
+mean(dams$HCC)
+sd(dams$HCC)
+median(dams$HCC)
+min(dams$HCC)
+max(dams$HCC)
+
+sfem <- subset(AllData, Repro=="Solitary female")
+mean(sfem$HCC)
+sd(sfem$HCC)
+median(sfem$HCC)
+min(sfem$HCC)
+max(sfem$HCC)
+
+
+SMales <- subset(AllData, Repro=="Solitary male")
+mean(SMales$HCC)
+sd(SMales$HCC)
+median(SMales$HCC)
+min(SMales$HCC)
+max(SMales$HCC)
+
+```
+
+## Follicle visualization
+
+```{r}
+
+FollicleFig <- ggplot(data = AllData, aes(fFOL,HCC))+
+  geom_boxplot(aes(group=fFOL))+
+  ylab("Hair cortisol concnetration (pg/mg)")+
+  xlab("Follicle category")+
+  geom_text(label="No follicles",
+            size=5,
+            x=0, y=20)
+FollicleFig
+
+ggsave(plot=FollicleFig,
+       "FollicleFig.png",
+       width = 9, height = 6,
+       units="in",
+       dpi=800)
+
+FollicleCort <- glmer(HCC~fFOL+
+                        Repro+
+                        fFOL*Repro+
+                       (1|Bear.ID),
+                     data=AllData,
+                     family=Gamma(link = "log"))
+summary(FollicleCort)
+
+ggplot(data = AllData, aes(HCC))+
+  geom_histogram(aes(fill = Repro))+
+  facet_wrap(~fFOL)
+
+```
+
+
+##Kit differences in our sample
+```{r}
+
+
+ggplot(data = AllData, aes(HCC))+
+  geom_histogram(aes(fill=Cortisol.kit,
+                     group = Cortisol.kit),
+                 bins=10,
+                 alpha=0.7)
+Kit1 <- subset(AllData, Cortisol.kit=="1")
+Kit2 <- subset(AllData, Cortisol.kit=="2")
+
+ggplot()+
+  geom_histogram(aes(HCC),
+                 data = Kit1,
+                 aes(fill=Repro,
+                     group=Repro),
+                 binwidth = sd(Kit1$HCC),
+                 alpha=0.7)+
+  geom_histogram(aes(HCC),
+                 data = Kit2,
+                 fill=P[35],
+                 binwidth = sd(Kit2$HCC),
+                 alpha=0.7)+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0), limits = c(0,32))
+
+AllData$fKIT <- as.factor(AllData$Cortisol.kit)
+
+Kit1.plot <- 
+  ggplot()+
+  geom_boxplot(aes(fKIT, HCC,
+                   group=Repro,
+                   fill=Repro),
+               alpha=0.8,
+               data = Kit1)+
+  scale_fill_manual(values=c(P[10],P[20],P[30],P[40]))+
+  xlab("Cortisol kit 1 (prior to 2014)")+
+  theme(legend.position = "inside",
+        legend.position.inside =c(0.25,0.85),
+        legend.text = element_text(size=9),
+        legend.title = element_blank())+
+  ylab("Hair cortisol concentrations (pg/mg)")
+
+Kit1.plot
+
+
+Kit2.plot <- 
+  ggplot()+
+  geom_boxplot(aes(fKIT, HCC,
+                   group=Repro,
+                   fill=Repro),
+               alpha=0.9,
+               data = Kit2)+
+  scale_fill_manual(values=c(P[10],P[20],P[30],P[40]))+
+  xlab("Cortisol kit 2 (after to 2014)")+
+  theme(axis.text.x = element_blank(),
+        legend.position = "none")+
+  ylab("Hair cortisol concentrations (pg/mg)")
+
+Kit2.plot
+
+kit.plot.both <- grid.arrange(Kit1.plot,
+                              Kit2.plot,
+                              ncol=1)
+
+ggsave(plot=kit.plot.both,
+       "KitPlot_Both.png",
+       height = 9, width =6.5,
+       units = "in",
+       dpi=800)
+
+
+Kit.age.plot <- ggplot(AllData, aes(age, HCC))+
+  geom_jitter(aes(pch=fKIT,
+                  color=fKIT),
+              alpha=0.5,
+              width = 0.2)+
+  scale_color_manual(values=c(P[15],P[30]))+
+  geom_boxplot(data = Kit1, aes(age,HCC,
+                                group = age),
+               fill=P[15],
+               alpha=0.1)+
+  geom_boxplot(data = Kit2, aes(age,HCC,
+                                group = age),
+               fill=P[30],
+               alpha=0.1)+
+  labs(color="Cortisol kit", pch="Cortisol kit")+
+  ylab("Hair cortisol concentration (pg/mg)")+
+  xlab("Bear age")
+
+ggsave(plot = Kit.age.plot,
+       "Cortkit_Age.png",
+       height=4, width = 5,
+       units = "in",
+       dpi=800)
+  
+
+```
+
+
+
+## Individual variation in cortisol
+
+```{r}
+
+Ind.Cort.Fig <- ggplot(data = AllData, aes(Bear.ID,HCC))+
+  geom_line(aes(group=Bear.ID),
+            alpha=0.5)+
+  geom_point(alpha=0.6,
+             aes(color=fKIT))+
+  scale_color_manual(values=c(P[15],P[30]))+
+  labs(color="Cortisol kit")+
+  theme(axis.text.x = element_blank())+
+  ylab("Hair cortisol concentrations (pg/mg)")+
+  xlab("Individual bear ID")+
+  theme(legend.position = "inside",
+        legend.position.inside =c(0.15,0.85),
+        legend.text = element_text(size=9))
+
+Ind.Cort.Fig
+
+ggsave(plot = Ind.Cort.Fig,
+       "IndCort.png",
+       height=5, width = 6.5,
+       units = "in",
+       dpi=800)
+
+```
+
+
+# subsetting data by each follicle category and re-running the top model
+
+## No follicles present
+
+```{r}
+
+NF.df <- subset(AllData, Follicles=="0")
+table(NF.df$Repro)
+
+ggplot(data = NF.df, aes(HCC))+
+  geom_histogram(aes(fill=Repro),
+                 binwidth = sd(NF.df$HCC))+
+  scale_fill_manual(values = c("#999999",
+                               "#E69F00",
+                               "#56B4E9",
+                               "#339900"))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))+
+facet_wrap(~Repro)
+
+Int.NF <- glmer(HCC~1+
+                  (1|Bear.ID),
+                 data = NF.df,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10),
+                             nAGQ = 0)
+
+
+TopModel.NF <- glmer(HCC~-1+age+
+                         Repro+
+                         age*Repro+
+                         (1|Bear.ID),
+                 data = NF.df,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10),
+                             nAGQ = 0)
+summary(TopModel.NF)
+
+AICc(Int.NF)
+AICc(TopModel.NF)
+
+
+```
+
+
+
+
+
+
+## Less than Half present
+
+```{r}
+
+LH.df <- subset(AllData, Follicles=="1")
+
+table(LH.df$Repro)
+
+ggplot(data = LH.df, aes(HCC))+
+  geom_histogram(aes(fill=Repro),
+                 binwidth = sd(NF.df$HCC))+
+  scale_fill_manual(values = c("#999999",
+                               "#E69F00",
+                               "#56B4E9",
+                               "#339900"))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))+
+facet_wrap(~Repro)
+
+Int.LH <- glmer(HCC~1+
+                  (1|Bear.ID),
+                 data = LH.df,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10),
+                             nAGQ = 0)
+
+
+TopModel.LH <- glmer(HCC~-1+age+
+                         Repro+
+                         age*Repro+
+                         (1|Bear.ID),
+                 data = LH.df,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10),
+                             nAGQ = 0)
+summary(TopModel.LH)
+
+AICc(Int.LH)
+AICc(TopModel.LH)
+
+
+```
+
+
+
+## More than Half present
+
+```{r}
+
+MH.df <- subset(AllData, Follicles=="2")
+table(MH.df$Repro)
+
+ggplot(data = MH.df, aes(HCC))+
+  geom_histogram(aes(fill=Repro),
+                 binwidth = sd(NF.df$HCC))+
+  scale_fill_manual(values = c("#999999",
+                               "#E69F00",
+                               "#56B4E9",
+                               "#339900"))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))+
+facet_wrap(~Repro)
+
+Int.MH <- glmer(HCC~1+
+                  (1|Bear.ID),
+                 data = MH.df,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10),
+                             nAGQ = 0)
+
+
+TopModel.MH <- glmer(HCC~-1+age+
+                         Repro+
+                         age*Repro+
+                         (1|Bear.ID),
+                 data = MH.df,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10),
+                             nAGQ = 0)
+summary(TopModel.MH)
+
+AICc(Int.LH)
+AICc(TopModel.LH)
+
+
+```
+
+
+## Compare Dams across follicles
+
+```{r}
+
+ggplot(data=subset(AllData, Repro=="Female with dependent offspring"))+
+  geom_histogram(aes(HCC,
+                     fill=fFOL),
+                 bins=7)+
+  scale_fill_viridis(discrete=TRUE,
+                     option="C")+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))+
+  xlab("Hair cort concentrations for mothers")
+
+
+```
+
+
+OK. After a chat with Andreas about a comment from a reviewer and the model results from the follicle subset vs the full dataset, we identified that the samples with no follicles seem to be different from the other two categories and completely changing model results. So we decided to omit those samples and reasess the model output.
+
+see below
+
+# Model without samples in follicle category = 0
+
+```{r}
+
+OnlyFoll.df <- subset(AllData, Follicles!="0")
+
+table(OnlyFoll.df$Repro)
+
+ggplot(data = OnlyFoll.df, aes(HCC))+
+  geom_histogram(aes(fill=Repro),
+                 binwidth = sd(NF.df$HCC))+
+  scale_fill_manual(values = c("#999999",
+                               "#E69F00",
+                               "#56B4E9",
+                               "#339900"))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))+
+facet_wrap(~Repro)
+
+Int.OF <- glmer(HCC~1+
+                  (1|Bear.ID)+
+                  (1|fFOL),
+                 data = OnlyFoll.df,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10),
+                             nAGQ = 0)
+
+
+TopModel.OF <- glmer(HCC~-1+age+
+                         Repro+
+                         age*Repro+
+                         (1|Bear.ID)+
+                       (1|fFOL),
+                 data = OnlyFoll.df,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10),
+                             nAGQ = 0)
+summary(TopModel.OF)
+
+AICc(Int.OF)
+AICc(TopModel.OF)
+
+############# additive only
+
+Additive.OF <- glmer(HCC~-1+age+
+                         Repro+
+                         (1|Bear.ID)+
+                       (1|fFOL),
+                 data = OnlyFoll.df,
+                 family = Gamma(link = "log"),
+                 glmerControl(optimizer = c("bobyqa","Nelder_Mead"),
+                             boundary.tol = 1e-10),
+                             nAGQ = 0)
+summary(Additive.OF)
+
+
+AICc(Additive.OF)
+AICc(Int.OF)
+AICc(TopModel.OF)
+
+AICc(Additive.OF)-AICc(TopModel.OF)
+
+
+```
+
+## Visualization for age and sex with the subset with only follicles present
+
+```{r}
+
+
+summary(TopModel.OF)
+AgexRepro.NF.df <- ggpredict(TopModel.OF,
+                        terms = c("age [sample=9]","Repro"))
+
+write.csv(AgexRepro.NF.df,
+          "AgexReproDataFrame_OnlyFollicles.csv")
+AllData <- read.csv("Marcello_DataForAnalysis.csv")
+
+AgexRepro.OF.df2 <- 
+  read.csv("AgexReproDataFrame_OnlyFollicles_AgeRestricted.csv")
+
+
+Marcello.OF.Fig <- ggplot(data = AgexRepro.OF.df2, aes(Age,Pred.Cort))+
+  geom_jitter(data = OnlyFoll.df, aes(age, HCC, 
+                                  color=Repro,
+                                  pch=Repro),
+              width=0.15,
+              alpha=0.5,
+              size=2)+
+  geom_ribbon(aes(ymin=conf.low,
+                  ymax=conf.high,
+                  fill=group),
+              alpha=0.15)+
+  geom_line(aes(color=group,
+                lty=group),
+            linewidth=1.2)+
+    scale_color_manual(values = c("#999999",
+                                  "#E69F00",
+                                  "#56B4E9",
+                                  "#339900"))+
+    scale_fill_manual(values = c("#999999",
+                                  "#E69F00",
+                                  "#56B4E9",
+                                  "#339900"))+
+  scale_linetype_manual(values = c(2,1,4,6))+
+  scale_y_continuous(expand=c(0.01,0.01),
+                     breaks = seq(0,20,5),
+                     limits = c(0,20))+
+  scale_x_continuous(expand = c(0.01,0.01),
+                     breaks = seq(1,9,1),
+                     labels = c("1","","3","","5","","7","","9"))+
+  ylab("Hair cortisol (pg/mg)")+
+  xlab("Bear age")+
+  labs(color="Reproductive status",
+       pch="Reproductive status",
+       fill="Reproductive status",
+       lty="Reproductive status")+
+  theme(legend.position = "none",
+        axis.title = element_text(size=18),
+        axis.text = element_text(size=16))
+
+Marcello.OF.Fig
+
+ggsave(plot = Marcello.OF.Fig,
+       "MarcelloLineFig_OnlyFolls.png",
+       width = 8.5, height = 5.5,
+       units = "in",
+       dpi=800)
+
+
+```
+
+## Box plot
+
+```{r}
+
+Marcello.OF.Box <- ggplot(data = OnlyFoll.df)+
+  geom_jitter(aes(Repro,HCC),
+              width=0.02,
+              alpha=0.2)+
+  geom_boxplot(aes(Repro,HCC, 
+                   group=Repro,
+                   fill=Repro),
+               alpha=0.4)+
+  scale_fill_manual(values = c("#999999",
+                                  "#E69F00",
+                                  "#56B4E9",
+                                  "#339900"))+
+  scale_y_continuous(expand=c(0.01,0.01),
+                     breaks = seq(0,20,5),
+                     limits = c(0,20))+
+  scale_x_discrete(expand=c(0.1,0.1),
+                   labels = c("Female with\ndependent offspring",
+                                "Dependent\noffspring",
+                                "Solitary\nfemale",
+                                "Solitary\nmale"))+
+  ylab("Hair cortisol (pg/mg)")+
+  xlab("Demographic class")+
+  labs(fill="Reproductive status")+
+  theme(legend.position = "none",
+        axis.title = element_text(size=18),
+        axis.text = element_text(size=16))
+
+Marcello.OF.Box
+
+ggsave(plot=Marcello.OF.Box,
+       "MarcelloBox_OnlyFolls.png",
+       width = 9, height = 6,
+       units="in",
+       dpi=800)
+  
+
+
+```
